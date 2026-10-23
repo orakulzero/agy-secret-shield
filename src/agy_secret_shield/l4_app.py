@@ -25,6 +25,13 @@ app = FastAPI(
     description="4-Tier Secret, Cookie & Privacy Quarantine Workstation with Windows DPAPI",
 )
 
+
+@app.get("/health")
+@app.get("/healthz")
+async def health_check() -> dict[str, str]:
+    """Standard health check endpoint."""
+    return {"status": "ok", "station": "secret_shield", "tier": "L4"}
+
 _pipeline = SecretShieldPipeline()
 
 

@@ -3,6 +3,7 @@
     "agy-secret-shield-auditor": {
       "command": "python",
       "args": ["-m", "agy_secret_shield.cli", "audit", "--json"],
+      "timeout_ms": 15000,
       "tools": [
         "audit_secrets",
         "seal_secret_dpapi",
