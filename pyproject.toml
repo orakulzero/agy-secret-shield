@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agy-secret-shield"
+version = "1.0.0"
+description = "4-Tier Secret, Cookie & Privacy Quarantine Workstation with Windows DPAPI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Obscured-grey", email = "obscured-grey@users.noreply.github.com" }
+]
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0.0"
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "httpx>=0.24.0"
+]
+
+[project.scripts]
+agy-secret-shield = "agy_secret_shield.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

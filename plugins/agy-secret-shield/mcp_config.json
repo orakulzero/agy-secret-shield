@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "agy-secret-shield-auditor": {
+      "command": "python",
+      "args": ["-m", "agy_secret_shield.cli", "audit", "--json"],
+      "tools": [
+        "audit_secrets",
+        "seal_secret_dpapi",
+        "inspect_cleanliness_certificate"
+      ]
+    }
+  }
+}

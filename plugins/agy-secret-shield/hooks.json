@@ -1,0 +1,4 @@
+{
+  "consolidated_into": "agy-golden-stack",
+  "description": "Lifecycle hooks consolidated into single-process GoldenStackBus dispatcher."
+}
