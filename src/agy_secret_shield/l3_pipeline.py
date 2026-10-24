@@ -216,3 +216,175 @@ class SecretShieldPipeline:
             "stages": stages,
             "certificate_sha256": certificate_sha256,
         }
+
+    def audit_git_history(
+        self,
+        repo_path: Path,
+        max_commits: int = 200,
+    ) -> dict[str, Any]:
+        """Audit git commit history for leaked secrets across all branches."""
+        return scan_git_history(repo_path, max_commits=max_commits)
+
+    def export_sarif(
+        self,
+        audit_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Convert audit findings to OASIS SARIF 2.1.0 format."""
+        return export_sarif_report(audit_result)
+
+
+def scan_git_history(
+    repo_path: Path,
+    max_commits: int = 200,
+) -> dict[str, Any]:
+    """
+    Execute `git log -p --all` across target repo, parse diff additions,
+    and detect any historical secret leaks per commit.
+    """
+    root = Path(repo_path).resolve()
+    if not (root / ".git").exists():
+        return {
+            "clean": True,
+            "commits_scanned": 0,
+            "total_findings": 0,
+            "flagged_commits": [],
+        }
+
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-p", "--all", f"-n{max_commits}"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            errors="ignore",
+            check=False,
+        )
+        output = proc.stdout
+    except Exception:
+        return {
+            "clean": True,
+            "commits_scanned": 0,
+            "total_findings": 0,
+            "flagged_commits": [],
+        }
+
+    commits: list[dict[str, Any]] = []
+    current_commit: Optional[dict[str, Any]] = None
+    additions: list[str] = []
+    commit_count = 0
+
+    for line in output.splitlines():
+        if line.startswith("commit ") and len(line.split()) >= 2:
+            commit_count += 1
+            if current_commit is not None and additions:
+                diff_text = "\n".join(additions)
+                scan_res = scan_text_for_secrets(diff_text)
+                if not scan_res["clean"]:
+                    current_commit["findings"] = scan_res["findings"]
+                    commits.append(current_commit)
+            commit_hash = line.split()[1]
+            current_commit = {
+                "commit": commit_hash,
+                "author": "",
+                "date": "",
+                "findings": [],
+            }
+            additions = []
+        elif line.startswith("Author: ") and current_commit is not None:
+            current_commit["author"] = line[8:].strip()
+        elif line.startswith("Date: ") and current_commit is not None:
+            current_commit["date"] = line[6:].strip()
+        elif line.startswith("+") and not line.startswith("+++") and current_commit is not None:
+            additions.append(line[1:])
+
+    if current_commit is not None and additions:
+        diff_text = "\n".join(additions)
+        scan_res = scan_text_for_secrets(diff_text)
+        if not scan_res["clean"]:
+            current_commit["findings"] = scan_res["findings"]
+            commits.append(current_commit)
+
+    total_findings = sum(len(c["findings"]) for c in commits)
+    return {
+        "clean": len(commits) == 0,
+        "commits_scanned": commit_count,
+        "total_findings": total_findings,
+        "flagged_commits": commits,
+    }
+
+
+def export_sarif_report(audit_result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Convert Secret Shield audit findings into OASIS SARIF 2.1.0 compliant JSON.
+    """
+    from .l1_primitives import SECRET_SIGNATURE_CATALOG
+
+    sarif_rules: list[dict[str, Any]] = []
+    for rule_id, meta in SECRET_SIGNATURE_CATALOG.items():
+        weight = meta["severity_weight"]
+        default_level = "error" if weight >= 45 else ("warning" if weight >= 30 else "note")
+        sarif_rules.append({
+            "id": rule_id,
+            "name": rule_id,
+            "shortDescription": {"text": meta["description"]},
+            "defaultConfiguration": {"level": default_level},
+            "properties": {
+                "category": meta["category"],
+                "severity_weight": weight,
+            },
+        })
+
+    results: list[dict[str, Any]] = []
+    findings = audit_result.get("findings", [])
+    for idx, f in enumerate(findings):
+        rule_id = f.get("rule_id", "high_entropy_token")
+        meta = SECRET_SIGNATURE_CATALOG.get(rule_id, {})
+        weight = meta.get("severity_weight", 40)
+        level = "error" if weight >= 45 else ("warning" if weight >= 30 else "note")
+        span = f.get("span", [0, 0])
+        col = span[0] + 1 if isinstance(span, list) and span else 1
+        results.append({
+            "ruleId": rule_id,
+            "ruleIndex": next((i for i, r in enumerate(sarif_rules) if r["id"] == rule_id), 0),
+            "level": level,
+            "message": {
+                "text": f"Detected sensitive {meta.get('category', 'secret')}: {f.get('description', 'Potential secret')}",
+            },
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": "target_buffer",
+                            "uriBaseId": "%SRCROOT%",
+                        },
+                        "region": {
+                            "startLine": 1,
+                            "startColumn": col,
+                        },
+                    },
+                },
+            ],
+            "properties": {
+                "redacted_tag": f.get("redacted_tag", ""),
+                "entropy": f.get("entropy", 0.0),
+            },
+        })
+
+    return {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "agy-secret-shield",
+                        "version": "1.1.0",
+                        "informationUri": "https://github.com/agy-community/agy-secret-shield",
+                        "rules": sarif_rules,
+                    },
+                },
+                "results": results,
+            },
+        ],
+    }

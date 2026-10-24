@@ -63,6 +63,21 @@ SECRET_SIGNATURE_CATALOG: dict[str, dict[str, Any]] = {
         "severity_weight": 25,
         "description": "High-entropy bearer or assignment token (> 4.2 bits/char).",
     },
+    "jwt_token": {
+        "category": "identity_token",
+        "severity_weight": 40,
+        "description": "JSON Web Token (JWT) bearer credential.",
+    },
+    "pkcs8_private_key": {
+        "category": "cryptographic_key",
+        "severity_weight": 60,
+        "description": "PKCS#8 / OpenSSH format private key block.",
+    },
+    "github_fine_grained_pat": {
+        "category": "scm_token",
+        "severity_weight": 50,
+        "description": "GitHub Fine-Grained Personal Access Token (github_pat_).",
+    },
 }
 
 _CYRILLIC_RANGE_PATTERN = re.compile(f"[{chr(0x0400)}-{chr(0x04FF)}]+")
@@ -81,12 +96,24 @@ _COMPILED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
     ),
     (
+        "github_fine_grained_pat",
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"),
+    ),
+    (
         "google_api_key",
         re.compile(r"\bAIza[0-9A-Za-z\-_]{20,}\b"),
     ),
     (
         "openai_api_key",
         re.compile(r"\bsk-[A-Za-z0-9\-_]{20,}\b"),
+    ),
+    (
+        "jwt_token",
+        re.compile(r"\bey[A-Za-z0-9_-]{10,}\.ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    ),
+    (
+        "pkcs8_private_key",
+        re.compile(r"-----BEGIN (?:ENCRYPTED )?PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----"),
     ),
     (
         "private_key_pem",
@@ -135,8 +162,8 @@ def compute_token_entropy(token: str) -> float:
 
 
 def _dpapi_encrypt_bytes(raw_bytes: bytes) -> bytes:
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
+    crypt32 = ctypes.WinDLL("crypt32")
+    kernel32 = ctypes.WinDLL("kernel32")
     in_buf = ctypes.create_string_buffer(raw_bytes, len(raw_bytes))
     in_blob = _DATA_BLOB(len(raw_bytes), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_char)))
     out_blob = _DATA_BLOB()
@@ -160,20 +187,23 @@ def _dpapi_encrypt_bytes(raw_bytes: bytes) -> bytes:
 
 
 def _dpapi_decrypt_bytes(cipher_bytes: bytes) -> bytes:
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
+    crypt32 = ctypes.WinDLL("crypt32")
+    kernel32 = ctypes.WinDLL("kernel32")
     in_buf = ctypes.create_string_buffer(cipher_bytes, len(cipher_bytes))
     in_blob = _DATA_BLOB(len(cipher_bytes), ctypes.cast(in_buf, ctypes.POINTER(ctypes.c_char)))
     out_blob = _DATA_BLOB()
-    ok = crypt32.CryptUnprotectData(
-        ctypes.byref(in_blob),
-        None,
-        None,
-        None,
-        None,
-        0x1,
-        ctypes.byref(out_blob),
-    )
+    try:
+        ok = crypt32.CryptUnprotectData(
+            ctypes.byref(in_blob),
+            None,
+            None,
+            None,
+            None,
+            0x1,
+            ctypes.byref(out_blob),
+        )
+    except Exception as exc:
+        raise ValueError(f"Windows CryptUnprotectData failed or ciphertext corrupted: {exc}") from exc
     if not ok:
         raise ValueError("Windows CryptUnprotectData failed or ciphertext corrupted")
     try:
@@ -349,3 +379,36 @@ def scan_text_for_secrets(
         "findings": findings,
         "sanitized_text": sanitized,
     }
+
+
+def batch_dpapi_seal(
+    plaintexts: list[str],
+    description_prefix: str = "batch-secret",
+) -> list[dict[str, Any]]:
+    """Encrypt a sequence of plaintext strings into DPAPI/AEAD envelopes."""
+    return [
+        dpapi_seal_secret(p, description=f"{description_prefix}-{idx}")
+        for idx, p in enumerate(plaintexts)
+    ]
+
+
+def batch_dpapi_unseal(
+    envelopes: list[dict[str, Any]],
+) -> list[str]:
+    """Decrypt a sequence of DPAPI/AEAD envelopes back into plaintext strings."""
+    return [dpapi_unseal_secret(env) for env in envelopes]
+
+
+def rotate_dpapi_quarantine(
+    envelopes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Unseal all envelopes and re-encrypt them into fresh envelopes,
+    verifying 100% byte-identical round-trip consistency.
+    """
+    plaintexts = batch_dpapi_unseal(envelopes)
+    new_envelopes = batch_dpapi_seal(plaintexts, description_prefix="rotated-secret")
+    recovered = batch_dpapi_unseal(new_envelopes)
+    if recovered != plaintexts:
+        raise ValueError("Batch DPAPI rotation failed: roundtrip plaintext mismatch")
+    return new_envelopes
