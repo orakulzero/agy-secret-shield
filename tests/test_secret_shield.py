@@ -341,7 +341,7 @@ def test_oss_hygiene_license_skill_and_zero_contaminants() -> None:
     assert "MIT License" in license_file.read_text(encoding="utf-8")
     assert skill_file.is_file()
 
-    excluded_parts = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", ".supergraph"}
+    excluded_parts = {".git", "__pycache__", ".pytest_cache", ".hypothesis", ".venv", "venv", ".supergraph"}
     for path in REPO_ROOT.rglob("*"):
         if not path.is_file():
             continue

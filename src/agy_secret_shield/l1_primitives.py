@@ -412,3 +412,234 @@ def rotate_dpapi_quarantine(
     if recovered != plaintexts:
         raise ValueError("Batch DPAPI rotation failed: roundtrip plaintext mismatch")
     return new_envelopes
+
+
+def _attempt_decode_token(cand: str) -> list[tuple[str, str]]:
+    """Attempt decoding a candidate token string using Hex, Base64, and Base64URL."""
+    results: list[tuple[str, str]] = []
+    cand_str = cand.strip()
+
+    # 1. Hex decoding (even length, length >= 16)
+    if len(cand_str) >= 16 and len(cand_str) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", cand_str):
+        try:
+            raw_hex = bytes.fromhex(cand_str)
+            decoded_hex = raw_hex.decode("utf-8")
+            if decoded_hex != cand_str and any(c.isprintable() for c in decoded_hex):
+                results.append(("hex", decoded_hex))
+        except Exception:
+            pass
+
+    # 2. Base64 standard decoding
+    cand_b64 = cand_str.rstrip("=")
+    if len(cand_b64) >= 16 and re.fullmatch(r"[A-Za-z0-9+/]+", cand_b64):
+        try:
+            pad = "=" * ((-len(cand_b64)) % 4)
+            raw_b64 = base64.b64decode((cand_b64 + pad).encode("ascii"), validate=False)
+            decoded_b64 = raw_b64.decode("utf-8")
+            if decoded_b64 != cand_str and any(c.isprintable() for c in decoded_b64):
+                results.append(("base64", decoded_b64))
+        except Exception:
+            pass
+
+    # 3. Base64URL decoding
+    if ("-" in cand_str or "_" in cand_str) and re.fullmatch(r"[A-Za-z0-9_-]+", cand_b64):
+        try:
+            pad = "=" * ((-len(cand_b64)) % 4)
+            raw_url = base64.urlsafe_b64decode((cand_b64 + pad).encode("ascii"))
+            decoded_url = raw_url.decode("utf-8")
+            if decoded_url != cand_str and any(c.isprintable() for c in decoded_url):
+                results.append(("base64url", decoded_url))
+        except Exception:
+            pass
+
+    return results
+
+
+def _scan_candidate_for_secrets(
+    cand: str,
+    current_depth: int,
+    max_depth: int,
+) -> list[tuple[str, int, dict[str, Any]]]:
+    """Recursively decode and scan candidate token up to max_depth."""
+    findings: list[tuple[str, int, dict[str, Any]]] = []
+    decoded_attempts = _attempt_decode_token(cand)
+
+    for enc_type, decoded_text in decoded_attempts:
+        direct_scan = scan_text_for_secrets(decoded_text)
+        if not direct_scan["clean"]:
+            for f in direct_scan["findings"]:
+                findings.append((enc_type, current_depth, f))
+        elif current_depth < max_depth:
+            nested_findings: list[tuple[str, int, dict[str, Any]]] = []
+            if len(decoded_text.strip()) >= 16:
+                nested_findings = _scan_candidate_for_secrets(
+                    decoded_text.strip(),
+                    current_depth + 1,
+                    max_depth,
+                )
+            if not nested_findings:
+                sub_candidates = [
+                    m.group(1) for m in re.finditer(
+                        r"(?<![A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{16,}={0,2})(?![A-Za-z0-9+/=_-])",
+                        decoded_text,
+                    )
+                ]
+                for sub_c in sub_candidates:
+                    if sub_c != cand:
+                        sub_res = _scan_candidate_for_secrets(
+                            sub_c,
+                            current_depth + 1,
+                            max_depth,
+                        )
+                        if sub_res:
+                            nested_findings.extend(sub_res)
+                            break
+            for nested_enc, depth, f in nested_findings:
+                findings.append((f"{enc_type}->{nested_enc}", depth, f))
+
+    return findings
+
+
+def decode_and_scan_obfuscated_secrets(
+    text: str,
+    max_depth: int = 2,
+) -> dict[str, Any]:
+    """Detect and decode candidate obfuscated secrets (Base64, Base64URL, Hex).
+
+    Recursively scans up to max_depth and replaces flagged tokens in sanitized_text
+    with [REDACTED_OBFUSCATED_DPAPI:<hash12>].
+    """
+    if not text:
+        return {
+            "clean": True,
+            "obfuscated_finding_count": 0,
+            "findings": [],
+            "sanitized_text": text or "",
+        }
+
+    candidate_pattern = re.compile(r"(?<![A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{16,}={0,2})(?![A-Za-z0-9+/=_-])")
+    candidate_tokens = list(dict.fromkeys(m.group(1) for m in candidate_pattern.finditer(text)))
+
+    all_findings: list[dict[str, Any]] = []
+    matched_tokens: set[str] = set()
+
+    for cand in candidate_tokens:
+        findings_for_cand = _scan_candidate_for_secrets(cand, 1, max_depth)
+        if findings_for_cand:
+            matched_tokens.add(cand)
+            for enc_type, depth, f in findings_for_cand:
+                digest12 = hashlib.sha256(cand.encode("utf-8")).hexdigest()[:12]
+                tag = f"[REDACTED_OBFUSCATED_DPAPI:{digest12}]"
+                meta = SECRET_SIGNATURE_CATALOG.get(f["rule_id"], {})
+                all_findings.append({
+                    "encoding_type": enc_type,
+                    "decode_depth": depth,
+                    "rule_id": f["rule_id"],
+                    "redacted_tag": tag,
+                    "description": f.get("description") or meta.get("description", "Obfuscated secret finding"),
+                    "entropy": compute_token_entropy(cand),
+                    "original_token": cand,
+                })
+
+    sanitized = text
+    for token in sorted(matched_tokens, key=len, reverse=True):
+        digest12 = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+        tag = f"[REDACTED_OBFUSCATED_DPAPI:{digest12}]"
+        sanitized = sanitized.replace(token, tag)
+
+    return {
+        "clean": len(all_findings) == 0,
+        "obfuscated_finding_count": len(all_findings),
+        "findings": all_findings,
+        "sanitized_text": sanitized,
+    }
+
+
+def analyze_git_blob_entropy(
+    blobs: dict[str, str],
+    window_size: int = 64,
+    threshold: float = 4.5,
+) -> dict[str, Any]:
+    """Compute sliding-window and token-level Shannon entropy across {path: content} mappings.
+
+    Flags anomalous high-entropy regions where entropy >= threshold.
+    """
+    if not isinstance(blobs, dict):
+        raise ValueError("Blobs must be a dictionary of {path: content}")
+
+    anomalies: list[dict[str, Any]] = []
+
+    for path, content in blobs.items():
+        if not isinstance(content, str) or not content:
+            continue
+
+        path_anomalies: list[dict[str, Any]] = []
+
+        if len(content) < window_size:
+            ent = compute_token_entropy(content)
+            if ent >= threshold:
+                path_anomalies.append({
+                    "path": path,
+                    "start": 0,
+                    "end": len(content),
+                    "entropy": ent,
+                    "sample": content[:64],
+                })
+        else:
+            step = max(1, min(16, window_size // 4))
+            raw_ranges: list[tuple[int, int, float]] = []
+            for start in range(0, len(content) - window_size + 1, step):
+                win = content[start : start + window_size]
+                ent = compute_token_entropy(win)
+                if ent >= threshold:
+                    raw_ranges.append((start, start + window_size, ent))
+
+            if raw_ranges:
+                curr_start, curr_end, curr_max_ent = raw_ranges[0]
+                for s, e, ent in raw_ranges[1:]:
+                    if s <= curr_end:
+                        curr_end = max(curr_end, e)
+                        curr_max_ent = max(curr_max_ent, ent)
+                    else:
+                        path_anomalies.append({
+                            "path": path,
+                            "start": curr_start,
+                            "end": curr_end,
+                            "entropy": round(curr_max_ent, 4),
+                            "sample": content[curr_start : min(curr_start + 64, curr_end)],
+                        })
+                        curr_start, curr_end, curr_max_ent = s, e, ent
+                path_anomalies.append({
+                    "path": path,
+                    "start": curr_start,
+                    "end": curr_end,
+                    "entropy": round(curr_max_ent, 4),
+                    "sample": content[curr_start : min(curr_start + 64, curr_end)],
+                })
+
+        for m in re.finditer(r"[^\s\"',;:(){}\[\]=<>]{24,}", content):
+            tok = m.group(0)
+            ent = compute_token_entropy(tok)
+            if ent >= threshold:
+                tok_start, tok_end = m.start(), m.end()
+                already_covered = any(
+                    a["start"] <= tok_start and a["end"] >= tok_end
+                    for a in path_anomalies
+                )
+                if not already_covered:
+                    path_anomalies.append({
+                        "path": path,
+                        "start": tok_start,
+                        "end": tok_end,
+                        "entropy": ent,
+                        "sample": tok[:64],
+                    })
+
+        anomalies.extend(path_anomalies)
+
+    return {
+        "clean": len(anomalies) == 0,
+        "anomaly_count": len(anomalies),
+        "anomalies": anomalies,
+    }
+

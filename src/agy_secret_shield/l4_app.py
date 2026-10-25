@@ -13,15 +13,16 @@ from pydantic import BaseModel
 
 from .l1_primitives import (
     SECRET_SIGNATURE_CATALOG,
+    decode_and_scan_obfuscated_secrets,
     dpapi_seal_secret,
     dpapi_unseal_secret,
     is_dpapi_available,
 )
-from .l3_pipeline import SecretShieldPipeline
+from .l3_pipeline import SecretShieldPipeline, run_pre_commit_dpapi_guard
 
 app = FastAPI(
     title="AGY Secret Shield L4 Workstation",
-    version="1.0.0",
+    version="1.2.0",
     description="4-Tier Secret, Cookie & Privacy Quarantine Workstation with Windows DPAPI",
 )
 
@@ -52,6 +53,17 @@ class ReportToRootRequest(BaseModel):
     profile: str = "clean_repo"
     target_root_dir: Optional[str] = None
     summary: Optional[str] = None
+
+
+class ScanObfuscatedRequest(BaseModel):
+    text: str
+    max_depth: int = 2
+
+
+class PreCommitGuardRequest(BaseModel):
+    repo_or_dir: str
+    redact_in_place: bool = False
+    vault_file: Optional[str] = None
 
 
 WORKSTATION_HTML = """<!DOCTYPE html>
@@ -211,3 +223,26 @@ def post_report_to_root(req: ReportToRootRequest) -> dict[str, Any]:
         "handoff_markdown_path": str(md_path),
         "record": record,
     }
+
+
+@app.post("/api/shield/scan-obfuscated")
+def post_scan_obfuscated(req: ScanObfuscatedRequest) -> dict[str, Any]:
+    try:
+        return decode_and_scan_obfuscated_secrets(req.text, max_depth=req.max_depth)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/shield/pre-commit-guard")
+def post_pre_commit_guard(req: PreCommitGuardRequest) -> dict[str, Any]:
+    try:
+        return run_pre_commit_dpapi_guard(
+            req.repo_or_dir,
+            redact_in_place=req.redact_in_place,
+            vault_file=req.vault_file,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+

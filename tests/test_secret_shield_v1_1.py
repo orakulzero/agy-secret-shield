@@ -134,7 +134,7 @@ def test_v1_1_export_sarif_report_schema() -> None:
     assert len(sarif["runs"]) == 1
     driver = sarif["runs"][0]["tool"]["driver"]
     assert driver["name"] == "agy-secret-shield"
-    assert driver["version"] == "1.1.0"
+    assert driver["version"] in ("1.1.0", "1.2.0")
     assert len(driver["rules"]) >= 8
 
     results = sarif["runs"][0]["results"]

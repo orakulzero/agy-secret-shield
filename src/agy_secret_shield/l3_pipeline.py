@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from typing import Any, Optional
 
 from .l1_primitives import (
     compute_token_entropy,
+    decode_and_scan_obfuscated_secrets,
     dpapi_seal_secret,
     scan_text_for_secrets,
 )
@@ -379,7 +381,7 @@ def export_sarif_report(audit_result: dict[str, Any]) -> dict[str, Any]:
                 "tool": {
                     "driver": {
                         "name": "agy-secret-shield",
-                        "version": "1.1.0",
+                        "version": "1.2.0",
                         "informationUri": "https://github.com/agy-community/agy-secret-shield",
                         "rules": sarif_rules,
                     },
@@ -388,3 +390,175 @@ def export_sarif_report(audit_result: dict[str, Any]) -> dict[str, Any]:
             },
         ],
     }
+
+
+def run_pre_commit_dpapi_guard(
+    repo_or_dir: str | Path,
+    redact_in_place: bool = False,
+    vault_file: Optional[str | Path] = None,
+) -> dict[str, Any]:
+    """Execute pre-commit secret guard with optional DPAPI in-place quarantine.
+
+    Scans staged git files (or all text files) for direct and obfuscated secrets.
+    If findings exist and redact_in_place is False, returns decision="block".
+    If findings exist and redact_in_place is True, seals secrets via DPAPI into vault_file,
+    redacts files on disk with [REDACTED_DPAPI:...] or [REDACTED_OBFUSCATED_DPAPI:...],
+    and returns decision="allow".
+    """
+    root = Path(repo_or_dir).resolve()
+    if not root.exists():
+        raise ValueError(f"Target repository or directory does not exist: {root}")
+
+    candidates: list[Path] = []
+    excluded_dirs = {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        ".supergraph",
+    }
+    binary_exts = {
+        ".pyc",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".exe",
+        ".dll",
+        ".so",
+        ".dylib",
+        ".bin",
+        ".db",
+        ".sqlite",
+        ".zip",
+        ".tar",
+        ".gz",
+    }
+
+    # Resolve vault path
+    if vault_file is not None:
+        v_path = Path(vault_file).resolve()
+    else:
+        v_path = (root if root.is_dir() else root.parent) / ".shield_vault.json"
+
+    # Attempt to discover staged git files
+    is_git_repo = (root / ".git").is_dir() if root.is_dir() else (root.parent / ".git").is_dir()
+    if is_git_repo:
+        git_working_dir = root if root.is_dir() else root.parent
+        try:
+            proc = subprocess.run(
+                ["git", "diff", "--cached", "--name-only"],
+                cwd=str(git_working_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            staged_names = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            for name in staged_names:
+                fpath = git_working_dir / name
+                if fpath.is_file() and fpath.suffix.lower() not in binary_exts:
+                    if fpath != v_path:
+                        candidates.append(fpath)
+        except Exception:
+            pass
+
+    # Fallback to traversing target files
+    if not candidates:
+        if root.is_file():
+            if root != v_path and root.suffix.lower() not in binary_exts:
+                candidates = [root]
+        else:
+            for p in root.rglob("*"):
+                if not p.is_file():
+                    continue
+                if any(part in excluded_dirs for part in p.parts):
+                    continue
+                if p.suffix.lower() in binary_exts:
+                    continue
+                if p == v_path or p.name == ".shield_vault.json":
+                    continue
+                candidates.append(p)
+
+    vault_entries: dict[str, Any] = {}
+    if v_path.exists():
+        try:
+            vault_entries = json.loads(v_path.read_text(encoding="utf-8"))
+        except Exception:
+            vault_entries = {}
+
+    files_scanned = 0
+    findings_count = 0
+    redacted_files: list[str] = []
+
+    for fpath in candidates:
+        try:
+            content = fpath.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        files_scanned += 1
+
+        direct_res = scan_text_for_secrets(content)
+        obf_res = decode_and_scan_obfuscated_secrets(content)
+
+        file_findings = len(direct_res["findings"]) + len(obf_res["findings"])
+        if file_findings > 0:
+            findings_count += file_findings
+
+            if redact_in_place:
+                current_text = direct_res["sanitized_text"]
+                for f in direct_res["findings"]:
+                    tag = f["redacted_tag"]
+                    if tag not in vault_entries:
+                        span = f.get("span")
+                        if span and len(span) == 2:
+                            raw_val = content[span[0]:span[1]]
+                        else:
+                            raw_val = tag
+                        try:
+                            env = dpapi_seal_secret(raw_val, description=f"pre-commit::{fpath.name}")
+                            vault_entries[tag] = env
+                        except Exception:
+                            pass
+
+                obf_on_sanitized = decode_and_scan_obfuscated_secrets(current_text)
+                current_text = obf_on_sanitized["sanitized_text"]
+                for f in obf_res["findings"]:
+                    tag = f["redacted_tag"]
+                    if tag not in vault_entries:
+                        raw_val = f.get("original_token", "")
+                        if raw_val:
+                            try:
+                                env = dpapi_seal_secret(raw_val, description=f"pre-commit-obfuscated::{fpath.name}")
+                                vault_entries[tag] = env
+                            except Exception:
+                                pass
+
+                fpath.write_text(current_text, encoding="utf-8")
+                try:
+                    rel_name = str(fpath.relative_to(root))
+                except ValueError:
+                    rel_name = str(fpath)
+                redacted_files.append(rel_name)
+
+    if redact_in_place and redacted_files:
+        v_path.parent.mkdir(parents=True, exist_ok=True)
+        v_path.write_text(json.dumps(vault_entries, indent=2), encoding="utf-8")
+
+    if findings_count == 0:
+        decision = "allow"
+    elif redact_in_place:
+        decision = "allow"
+    else:
+        decision = "block"
+
+    return {
+        "decision": decision,
+        "files_scanned": files_scanned,
+        "findings_count": findings_count,
+        "redacted_files": redacted_files,
+        "vault_entries_count": len(vault_entries),
+    }
+
