@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agy-secret-shield"
-version = "1.2.0"
+version = "1.3.0"
 description = "4-Tier Secret, Cookie & Privacy Quarantine Workstation with Windows DPAPI"
 readme = "README.md"
 requires-python = ">=3.10"

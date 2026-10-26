@@ -19,10 +19,11 @@ from .l1_primitives import (
     is_dpapi_available,
 )
 from .l3_pipeline import SecretShieldPipeline, run_pre_commit_dpapi_guard
+from .scanner import scan_python_ast_secrets
 
 app = FastAPI(
     title="AGY Secret Shield L4 Workstation",
-    version="1.2.0",
+    version="1.3.0",
     description="4-Tier Secret, Cookie & Privacy Quarantine Workstation with Windows DPAPI",
 )
 
@@ -64,6 +65,11 @@ class PreCommitGuardRequest(BaseModel):
     repo_or_dir: str
     redact_in_place: bool = False
     vault_file: Optional[str] = None
+
+
+class ScanASTRequest(BaseModel):
+    source_code: str
+    filename: str = "<memory>"
 
 
 WORKSTATION_HTML = """<!DOCTYPE html>
@@ -245,4 +251,10 @@ def post_pre_commit_guard(req: PreCommitGuardRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/shield/scan-ast")
+def post_scan_ast(req: ScanASTRequest) -> dict[str, Any]:
+    return scan_python_ast_secrets(req.source_code, filename=req.filename)
+
 
