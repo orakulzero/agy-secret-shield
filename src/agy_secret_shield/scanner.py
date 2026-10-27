@@ -433,3 +433,271 @@ def scan_python_ast_secrets(
         "benign_skipped_count": len(visitor.false_positive_filters),
         "benign_skipped": visitor.false_positive_filters,  # Schema alias
     }
+
+
+def export_secret_scan_sarif(
+    scan_results: Union[Dict[str, Any], List[Dict[str, Any]]],
+    output_path: Optional[Union[str, Path]] = None,
+) -> Dict[str, Any]:
+    """Export secret scan findings conforming to OASIS SARIF 2.1.0 JSON schema.
+
+    Args:
+        scan_results: Structured dict or list containing findings from AST, diff, or text scan.
+        output_path: Optional file path to persist JSON output.
+
+    Returns:
+        Structured SARIF 2.1.0 dict.
+    """
+    import json
+    from pathlib import Path
+    from .l1_primitives import SECRET_SIGNATURE_CATALOG
+
+    if isinstance(scan_results, dict):
+        findings = scan_results.get("findings", [])
+    elif isinstance(scan_results, list):
+        findings = scan_results
+    else:
+        findings = []
+
+    # Build catalog rules and dynamic rules
+    sarif_rules: List[Dict[str, Any]] = []
+    rule_ids_seen: Set[str] = set()
+
+    for r_id, meta in SECRET_SIGNATURE_CATALOG.items():
+        weight = meta.get("severity_weight", 40)
+        lvl = "error" if weight >= 40 else ("warning" if weight >= 25 else "note")
+        sarif_rules.append({
+            "id": r_id,
+            "name": r_id,
+            "shortDescription": {"text": meta.get("description", r_id)},
+            "fullDescription": {"text": f"Rule {r_id} detects {meta.get('category', 'secret')} contaminants."},
+            "defaultConfiguration": {"level": lvl},
+            "properties": {
+                "category": meta.get("category", "secret"),
+                "severity_weight": weight,
+            },
+        })
+        rule_ids_seen.add(r_id)
+
+    # Dynamic rules for findings with custom rule_ids
+    for f in findings:
+        r_id = f.get("rule_id") or f.get("secret_type") or "generic_secret"
+        if r_id not in rule_ids_seen:
+            weight = f.get("severity_weight") or f.get("severity") or 40
+            if isinstance(weight, str):
+                weight = 50 if weight.lower() == "error" else 30
+            lvl = "error" if weight >= 40 else "warning"
+            sarif_rules.append({
+                "id": r_id,
+                "name": r_id,
+                "shortDescription": {"text": f.get("description", f"Detected sensitive pattern: {r_id}")},
+                "fullDescription": {"text": f"Automated detection for secret pattern: {r_id}"},
+                "defaultConfiguration": {"level": lvl},
+                "properties": {
+                    "category": f.get("category", "credential"),
+                    "severity_weight": weight,
+                },
+            })
+            rule_ids_seen.add(r_id)
+
+    rule_index_map = {r["id"]: idx for idx, r in enumerate(sarif_rules)}
+
+    results: List[Dict[str, Any]] = []
+    for f in findings:
+        r_id = f.get("rule_id") or f.get("secret_type") or "generic_secret"
+        r_idx = rule_index_map.get(r_id, 0)
+        rule_def = sarif_rules[r_idx]
+        default_lvl = rule_def["defaultConfiguration"]["level"]
+
+        weight = f.get("severity_weight") or f.get("severity")
+        if isinstance(weight, int):
+            level = "error" if weight >= 40 else "warning"
+        elif isinstance(weight, str) and weight.lower() in ("error", "warning", "note"):
+            level = weight.lower()
+        else:
+            level = default_lvl
+
+        file_path = f.get("file_path") or f.get("filename") or "<unknown>"
+        line_no = f.get("line_number") or f.get("lineno") or 1
+        col_start = f.get("start_column") or f.get("col_offset") or f.get("column") or 1
+        col_end = f.get("end_column") or (col_start + len(str(f.get("sample", ""))))
+
+        results.append({
+            "ruleId": r_id,
+            "ruleIndex": r_idx,
+            "level": level,
+            "message": {
+                "text": f"Detected secret {r_id}: {f.get('description') or f.get('sample') or 'sensitive token'}",
+            },
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": file_path,
+                            "uriBaseId": "%SRCROOT%",
+                        },
+                        "region": {
+                            "startLine": line_no,
+                            "startColumn": col_start,
+                            "endLine": line_no,
+                            "endColumn": max(col_start, col_end),
+                        },
+                    },
+                },
+            ],
+            "properties": {
+                "category": f.get("category", rule_def["properties"]["category"]),
+                "sample": f.get("sample", ""),
+                "entropy": f.get("entropy", 0.0),
+            },
+        })
+
+    sarif_doc = {
+        "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/cos02/schemas/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "AGY Secret Shield",
+                        "version": "2.0.0",
+                        "semanticVersion": "2.0.0",
+                        "informationUri": "https://github.com/agy-community/agy-secret-shield",
+                        "rules": sarif_rules,
+                    },
+                },
+                "results": results,
+            },
+        ],
+    }
+
+    if output_path is not None:
+        p = Path(output_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sarif_doc, indent=2), encoding="utf-8")
+
+    return sarif_doc
+
+
+def scan_git_diff_incremental(
+    diff_text: str,
+    source_root: Optional[Union[str, Path]] = None,
+) -> Dict[str, Any]:
+    """Incrementally parse and scan added (+) lines from a unified git diff.
+
+    Tracks exact target file line numbers per hunk header (@@ -old,len +new,len @@).
+    Suppresses deleted (-), unchanged ( ), benign fixtures, mocks, and false-positive constants.
+    """
+    if not isinstance(diff_text, str):
+        return {
+            "clean": True,
+            "findings_count": 0,
+            "findings": [],
+            "scanned_files": [],
+            "scanned_lines_count": 0,
+            "diff_hunks_count": 0,
+            "sarif": export_secret_scan_sarif({"findings": []}),
+        }
+
+    from .l1_primitives import scan_text_for_secrets, SECRET_SIGNATURE_CATALOG
+
+    lines = diff_text.splitlines()
+    findings: List[Dict[str, Any]] = []
+    scanned_files: Set[str] = set()
+    total_added_lines = 0
+    total_hunks = 0
+
+    current_file = "<unknown>"
+    current_new_line = 0
+    in_hunk = False
+
+    hunk_header_re = re.compile(r"^@@\s+-[0-9]+(?:,[0-9]+)?\s+\+(?P<new_start>[0-9]+)(?:,[0-9]+)?\s+@@")
+
+    for line in lines:
+        if line.startswith("diff --git "):
+            parts = line.split(" ")
+            if len(parts) >= 4 and parts[3].startswith("b/"):
+                current_file = parts[3][2:]
+                scanned_files.add(current_file)
+            in_hunk = False
+            continue
+        elif line.startswith("+++ b/"):
+            current_file = line[6:].strip()
+            if current_file != "/dev/null":
+                scanned_files.add(current_file)
+            in_hunk = False
+            continue
+        elif line.startswith("--- "):
+            continue
+
+        h_match = hunk_header_re.match(line)
+        if h_match:
+            total_hunks += 1
+            current_new_line = int(h_match.group("new_start"))
+            in_hunk = True
+            continue
+
+        if not in_hunk:
+            continue
+
+        if line.startswith("+") and not line.startswith("+++"):
+            total_added_lines += 1
+            added_content = line[1:]
+
+            lower_content = added_content.lower()
+            is_benign = any(p in lower_content for p in _BENIGN_VAR_PREFIXES) or "mock" in lower_content or "dummy" in lower_content
+
+            if not is_benign:
+                text_findings = scan_text_for_secrets(added_content)
+                for tf in text_findings.get("findings", []):
+                    matched_val = tf.get("sample", "")
+                    if _is_hex_constant(matched_val):
+                        continue
+                    findings.append({
+                        "file_path": current_file,
+                        "line_number": current_new_line,
+                        "line_content": added_content.strip(),
+                        "rule_id": tf.get("rule_id", "secret"),
+                        "secret_type": tf.get("rule_id", "secret"),
+                        "category": tf.get("category", "credential"),
+                        "severity_weight": tf.get("severity_weight", 40),
+                        "sample": matched_val,
+                        "start_column": tf.get("span", [0, 0])[0] + 1 if tf.get("span") else 1,
+                        "end_column": tf.get("span", [0, 0])[1] + 1 if tf.get("span") else len(added_content),
+                    })
+
+                assign_match = re.search(r"([A-Za-z0-9_]+)\s*[:=]\s*['\"]([^'\"]+)['\"]", added_content)
+                if assign_match:
+                    var_name, str_val = assign_match.group(1), assign_match.group(2)
+                    if not _is_benign_variable_name(var_name) and not _is_hex_constant(str_val):
+                        matched_sig = _match_credential_signature(str_val)
+                        if matched_sig and not any(f["line_number"] == current_new_line for f in findings):
+                            findings.append({
+                                "file_path": current_file,
+                                "line_number": current_new_line,
+                                "line_content": added_content.strip(),
+                                "rule_id": matched_sig,
+                                "secret_type": matched_sig,
+                                "category": "cloud_credential" if "key" in matched_sig else "scm_token",
+                                "severity_weight": 45,
+                                "sample": str_val[:8] + "...",
+                                "start_column": assign_match.start(2) + 1,
+                                "end_column": assign_match.end(2) + 1,
+                            })
+
+            current_new_line += 1
+        elif line.startswith(" "):
+            current_new_line += 1
+        elif line.startswith("-"):
+            pass
+
+    return {
+        "clean": len(findings) == 0,
+        "findings_count": len(findings),
+        "findings": findings,
+        "scanned_files": sorted(list(scanned_files)),
+        "scanned_lines_count": total_added_lines,
+        "diff_hunks_count": total_hunks,
+        "sarif": export_secret_scan_sarif({"findings": findings}),
+    }
+

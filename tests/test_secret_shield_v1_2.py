@@ -381,12 +381,12 @@ def test_v1_2_version_synchronization() -> None:
     repo_plugin_manifest = json.loads(
         (REPO_ROOT / "plugins" / "agy-secret-shield" / "plugin.json").read_text(encoding="utf-8")
     )
-    assert repo_plugin_manifest["version"] in ("1.2.0", "1.3.0")
+    assert repo_plugin_manifest["version"] in ("1.2.0", "1.3.0", "2.0.0")
 
     # SARIF report driver version
     sarif = export_sarif_report({"findings": []})
     driver = sarif["runs"][0]["tool"]["driver"]
-    assert driver["version"] in ("1.2.0", "1.3.0")
+    assert driver["version"] in ("1.2.0", "1.3.0", "2.0.0")
 
     # FastAPI app version
-    assert app.version in ("1.2.0", "1.3.0")
+    assert app.version in ("1.2.0", "1.3.0", "2.0.0")

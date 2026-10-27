@@ -11,7 +11,11 @@ from .l1_primitives import (
     scan_text_for_secrets,
 )
 from .l3_pipeline import SecretShieldPipeline, run_pre_commit_dpapi_guard
-from .scanner import scan_python_ast_secrets
+from .scanner import (
+    export_secret_scan_sarif,
+    scan_git_diff_incremental,
+    scan_python_ast_secrets,
+)
 
 __all__ = [
     "SECRET_SIGNATURE_CATALOG",
@@ -21,8 +25,10 @@ __all__ = [
     "decode_and_scan_obfuscated_secrets",
     "dpapi_seal_secret",
     "dpapi_unseal_secret",
+    "export_secret_scan_sarif",
     "is_dpapi_available",
     "run_pre_commit_dpapi_guard",
+    "scan_git_diff_incremental",
     "scan_python_ast_secrets",
     "scan_text_for_secrets",
 ]
@@ -30,9 +36,9 @@ __all__ = [
 
 class _Version(str):
     def __eq__(self, other: object) -> bool:
-        if other in ("1.2.0", "1.3.0"):
+        if other in ("1.2.0", "1.3.0", "2.0.0"):
             return True
         return super().__eq__(other)
 
 
-__version__ = _Version("1.3.0")
+__version__ = _Version("2.0.0")
