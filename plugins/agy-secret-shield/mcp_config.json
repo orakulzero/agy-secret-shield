@@ -2,7 +2,12 @@
   "mcpServers": {
     "agy-secret-shield-auditor": {
       "command": "python",
-      "args": ["-m", "agy_secret_shield.cli", "audit", "--json"],
+      "args": [
+        "-W",
+        "ignore::RuntimeWarning",
+        "-m",
+        "agy_secret_shield.mcp_server"
+      ],
       "timeout_ms": 15000,
       "tools": [
         "audit_secrets",
