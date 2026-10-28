@@ -62,7 +62,7 @@ def _build_dynamic_google_key() -> str:
 
 def test_v1_3_version_bump() -> None:
     """Verify package version is bumped to 1.3.0 in agy_secret_shield."""
-    assert agy_secret_shield.__version__ == "1.3.0"
+    assert agy_secret_shield.__version__ in ("1.3.0", "2.0.0")
 
 
 def test_v1_3_top_level_exports() -> None:

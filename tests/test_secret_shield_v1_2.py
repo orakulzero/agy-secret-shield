@@ -373,10 +373,10 @@ def test_v1_2_hypothesis_dpapi_roundtrip_invariance(secret_str: str) -> None:
 def test_v1_2_version_synchronization() -> None:
     import agy_secret_shield
 
-    assert agy_secret_shield.__version__ in ("1.2.0", "1.3.0")
+    assert agy_secret_shield.__version__ in ("1.2.0", "1.3.0", "2.0.0")
 
     pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "1.2.0"' in pyproject_text or 'version = "1.3.0"' in pyproject_text
+    assert 'version = "1.2.0"' in pyproject_text or 'version = "1.3.0"' in pyproject_text or 'version = "2.0.0"' in pyproject_text
 
     repo_plugin_manifest = json.loads(
         (REPO_ROOT / "plugins" / "agy-secret-shield" / "plugin.json").read_text(encoding="utf-8")

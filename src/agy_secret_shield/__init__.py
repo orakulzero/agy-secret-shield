@@ -34,11 +34,4 @@ __all__ = [
 ]
 
 
-class _Version(str):
-    def __eq__(self, other: object) -> bool:
-        if other in ("1.2.0", "1.3.0", "2.0.0"):
-            return True
-        return super().__eq__(other)
-
-
-__version__ = _Version("2.0.0")
+__version__ = "2.0.0"
