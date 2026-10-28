@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any, Optional
+import urllib.parse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -148,10 +149,67 @@ def get_catalog() -> dict[str, Any]:
     }
 
 
+def _validate_audit_repo_path(repo_path: str) -> Path:
+    raw = repo_path.strip()
+    unquoted = urllib.parse.unquote(raw)
+
+    if ".." in raw or ".." in unquoted:
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal attempt detected: access outside workspace is prohibited",
+        )
+
+    normalized = unquoted.replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    if any(p in (".", "..") for p in parts):
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal attempt detected: access outside workspace is prohibited",
+        )
+
+    lowered = normalized.lower()
+    prohibited_system_patterns = (
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/root",
+        "/boot",
+        "windows/system32",
+        "system32/cmd.exe",
+        "system32/config/sam",
+        "c:/windows",
+    )
+    if any(pattern in lowered for pattern in prohibited_system_patterns):
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal attempt detected: access outside workspace is prohibited",
+        )
+
+    try:
+        resolved = Path(unquoted).resolve()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal attempt detected: access outside workspace is prohibited",
+        ) from exc
+
+    resolved_norm = str(resolved).lower().replace("\\", "/")
+    if resolved_norm in ("c:", "c:/", "/", "d:", "d:/") or "c:/windows" in resolved_norm or "/etc" in resolved_norm:
+        raise HTTPException(
+            status_code=400,
+            detail="Path traversal attempt detected: access outside workspace is prohibited",
+        )
+
+    return Path(unquoted)
+
+
 @app.post("/api/shield/audit")
 def post_audit(req: AuditRequest) -> dict[str, Any]:
     try:
-        repo_path_obj = Path(req.repo_path) if req.repo_path else None
+        repo_path_obj = _validate_audit_repo_path(req.repo_path) if req.repo_path else None
         return _pipeline.audit_target(
             profile=req.profile,
             custom_text=req.custom_text,
@@ -159,6 +217,8 @@ def post_audit(req: AuditRequest) -> dict[str, Any]:
             extra_pii_tokens=req.extra_pii_tokens,
             ignore_tests=req.ignore_tests,
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

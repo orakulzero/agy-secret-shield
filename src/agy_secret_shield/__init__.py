@@ -16,10 +16,18 @@ from .scanner import (
     scan_git_diff_incremental,
     scan_python_ast_secrets,
 )
+from .skillspector_scanner import (
+    SkillAuditResult,
+    SkillSpectorScanner,
+    SkillVulnerability,
+)
 
 __all__ = [
     "SECRET_SIGNATURE_CATALOG",
     "SecretShieldPipeline",
+    "SkillAuditResult",
+    "SkillSpectorScanner",
+    "SkillVulnerability",
     "analyze_git_blob_entropy",
     "compute_token_entropy",
     "decode_and_scan_obfuscated_secrets",
