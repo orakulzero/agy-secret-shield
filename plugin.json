@@ -1,0 +1,12 @@
+{
+  "name": "agy-secret-shield",
+  "displayName": "AGY Secret Shield",
+  "description": "Deterministic secret, session cookie, entropy anomaly, and PII quarantine pipeline with Windows DPAPI.",
+  "version": "2.0.0",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Scan repository for leaked credentials and session cookies",
+    "Quarantine sensitive keys using Windows DPAPI",
+    "Generate cryptographic cleanliness certificate"
+  ]
+}
