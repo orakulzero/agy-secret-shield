@@ -10,6 +10,24 @@ from typing import Optional, Sequence
 from .l1_primitives import dpapi_seal_secret, dpapi_unseal_secret
 from .l3_pipeline import SecretShieldPipeline
 
+def validate_audit_args(profile: str, repo_path: Optional[str], ignore_tests: bool) -> dict:
+    """Validates and sanitizes arguments for the audit command."""
+    errors = []
+    
+    if repo_path is not None and ".." in repo_path:
+        errors.append("Path traversal attempt detected in repo_path.")
+        
+    result = {
+        "valid": len(errors) == 0,
+        "profile": profile,
+        "errors": errors
+    }
+    
+    if result["valid"] and repo_path is not None:
+        result["normalized_repo_path"] = str(Path(repo_path).resolve())
+        
+    return result
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -36,8 +54,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "audit":
+        
+        args_validation = validate_audit_args(
+            profile=args.profile, 
+            repo_path=args.repo_path, 
+            ignore_tests=getattr(args, "ignore_tests", False)
+        )
+        if not args_validation["valid"]:
+            print(f"Error: {args_validation['errors']}")
+            return 1
+            
         pipeline = SecretShieldPipeline()
-        repo_path = Path(args.repo_path) if args.repo_path else None
+        repo_path = Path(args_validation.get("normalized_repo_path", args.repo_path)) if args.repo_path else None
+        
         result = pipeline.audit_target(
             profile=args.profile,
             repo_path=repo_path,
