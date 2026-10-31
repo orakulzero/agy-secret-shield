@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import base64
 import ctypes
-from ctypes import wintypes
 import hashlib
 import hmac
 import math
 import os
 import re
-from typing import Any, Optional
+from ctypes import wintypes
+from typing import Any
 
 SECRET_SIGNATURE_CATALOG: dict[str, dict[str, Any]] = {
     "google_cookie_1psid": {
@@ -180,8 +180,7 @@ def _dpapi_encrypt_bytes(raw_bytes: bytes) -> bytes:
     if not ok:
         raise ValueError("Windows CryptProtectData failed")
     try:
-        encrypted = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        return encrypted
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
     finally:
         kernel32.LocalFree(out_blob.pbData)
 
@@ -207,14 +206,13 @@ def _dpapi_decrypt_bytes(cipher_bytes: bytes) -> bytes:
     if not ok:
         raise ValueError("Windows CryptUnprotectData failed or ciphertext corrupted")
     try:
-        decrypted = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        return decrypted
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
     finally:
         kernel32.LocalFree(out_blob.pbData)
 
 
 def _fallback_key() -> bytes:
-    seed = f"agy-secret-shield-local-vault::{os.name}".encode("utf-8")
+    seed = f"agy-secret-shield-local-vault::{os.name}".encode()
     return hashlib.sha256(seed).digest()
 
 
@@ -227,7 +225,7 @@ def _fallback_seal(raw_bytes: bytes) -> bytes:
         block = hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest()
         stream.extend(block)
         counter += 1
-    xored = bytes(a ^ b for a, b in zip(raw_bytes, stream[: len(raw_bytes)]))
+    xored = bytes(a ^ b for a, b in zip(raw_bytes, stream[: len(raw_bytes)], strict=False))
     mac = hmac.new(key, nonce + xored, hashlib.sha256).digest()
     return nonce + mac + xored
 
@@ -248,14 +246,14 @@ def _fallback_unseal(blob: bytes) -> bytes:
         block = hashlib.sha256(key + nonce + counter.to_bytes(4, "big")).digest()
         stream.extend(block)
         counter += 1
-    return bytes(a ^ b for a, b in zip(xored, stream[: len(xored)]))
+    return bytes(a ^ b for a, b in zip(xored, stream[: len(xored)], strict=False))
 
 
 def dpapi_seal_secret(plaintext: str, description: str = "agy-secret") -> dict[str, Any]:
     """Seal a sensitive secret string using Windows DPAPI (with local AEAD fallback)."""
     if not isinstance(plaintext, str) or not plaintext:
         raise ValueError("Plaintext secret must be a non-empty string")
-    raw_bytes = plaintext.encode("utf-8")
+    raw_bytes = plaintext.encode()
     digest_hex = hashlib.sha256(raw_bytes).hexdigest()
 
     if is_dpapi_available():
@@ -306,7 +304,7 @@ def dpapi_unseal_secret(envelope: dict[str, Any]) -> str:
 
 def scan_text_for_secrets(
     text: str,
-    extra_pii_tokens: Optional[list[str]] = None,
+    extra_pii_tokens: list[str] | None = None,
 ) -> dict[str, Any]:
     """Scan text for secrets, cookies, Cyrillic characters, and custom PII tokens.
 
@@ -330,7 +328,7 @@ def scan_text_for_secrets(
         matches = list(pattern.finditer(text))
         for m in matches:
             matched_val = m.group(0)
-            digest12 = hashlib.sha256(matched_val.encode("utf-8")).hexdigest()[:12]
+            digest12 = hashlib.sha256(matched_val.encode()).hexdigest()[:12]
             tag = f"[REDACTED_DPAPI:{digest12}]"
             entropy = compute_token_entropy(matched_val)
             findings.append(
@@ -355,7 +353,7 @@ def scan_text_for_secrets(
             token_pattern = re.compile(re.escape(token), re.IGNORECASE)
             for m in token_pattern.finditer(text):
                 matched_val = m.group(0)
-                digest12 = hashlib.sha256(matched_val.encode("utf-8")).hexdigest()[:12]
+                digest12 = hashlib.sha256(matched_val.encode()).hexdigest()[:12]
                 tag = f"[REDACTED_DPAPI:{digest12}]"
                 findings.append(
                     {
@@ -467,8 +465,7 @@ def _scan_candidate_for_secrets(
     for enc_type, decoded_text in decoded_attempts:
         direct_scan = scan_text_for_secrets(decoded_text)
         if not direct_scan["clean"]:
-            for f in direct_scan["findings"]:
-                findings.append((enc_type, current_depth, f))
+            findings.extend((enc_type, current_depth, f) for f in direct_scan["findings"])
         elif current_depth < max_depth:
             nested_findings: list[tuple[str, int, dict[str, Any]]] = []
             if len(decoded_text.strip()) >= 16:
@@ -528,7 +525,7 @@ def decode_and_scan_obfuscated_secrets(
         if findings_for_cand:
             matched_tokens.add(cand)
             for enc_type, depth, f in findings_for_cand:
-                digest12 = hashlib.sha256(cand.encode("utf-8")).hexdigest()[:12]
+                digest12 = hashlib.sha256(cand.encode()).hexdigest()[:12]
                 tag = f"[REDACTED_OBFUSCATED_DPAPI:{digest12}]"
                 meta = SECRET_SIGNATURE_CATALOG.get(f["rule_id"], {})
                 all_findings.append({
@@ -543,7 +540,7 @@ def decode_and_scan_obfuscated_secrets(
 
     sanitized = text
     for token in sorted(matched_tokens, key=len, reverse=True):
-        digest12 = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+        digest12 = hashlib.sha256(token.encode()).hexdigest()[:12]
         tag = f"[REDACTED_OBFUSCATED_DPAPI:{digest12}]"
         sanitized = sanitized.replace(token, tag)
 
@@ -642,4 +639,3 @@ def analyze_git_blob_entropy(
         "anomaly_count": len(anomalies),
         "anomalies": anomalies,
     }
-
