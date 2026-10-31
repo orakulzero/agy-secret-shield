@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 import urllib.parse
 
 from fastapi import FastAPI, HTTPException
@@ -40,9 +40,9 @@ _pipeline = SecretShieldPipeline()
 
 class AuditRequest(BaseModel):
     profile: str = "clean_repo"
-    custom_text: Optional[str] = None
-    repo_path: Optional[str] = None
-    extra_pii_tokens: Optional[list[str]] = None
+    custom_text: str | None = None
+    repo_path: str | None = None
+    extra_pii_tokens: list[str] | None = None
     ignore_tests: bool = False
 
 
@@ -53,8 +53,8 @@ class DPAPISealRequest(BaseModel):
 
 class ReportToRootRequest(BaseModel):
     profile: str = "clean_repo"
-    target_root_dir: Optional[str] = None
-    summary: Optional[str] = None
+    target_root_dir: str | None = None
+    summary: str | None = None
 
 
 class ScanObfuscatedRequest(BaseModel):
@@ -65,7 +65,7 @@ class ScanObfuscatedRequest(BaseModel):
 class PreCommitGuardRequest(BaseModel):
     repo_or_dir: str
     redact_in_place: bool = False
-    vault_file: Optional[str] = None
+    vault_file: str | None = None
 
 
 class ScanASTRequest(BaseModel):
@@ -316,5 +316,3 @@ def post_pre_commit_guard(req: PreCommitGuardRequest) -> dict[str, Any]:
 @app.post("/api/shield/scan-ast")
 def post_scan_ast(req: ScanASTRequest) -> dict[str, Any]:
     return scan_python_ast_secrets(req.source_code, filename=req.filename)
-
-
