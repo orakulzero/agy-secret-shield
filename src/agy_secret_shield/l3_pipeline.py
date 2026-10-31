@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Optional
+from typing import Any
 
 from .l1_primitives import (
     compute_token_entropy,
@@ -56,9 +56,9 @@ class SecretShieldPipeline:
     def audit_target(
         self,
         profile: str = "clean_repo",
-        custom_text: Optional[str] = None,
-        repo_path: Optional[Path] = None,
-        extra_pii_tokens: Optional[list[str]] = None,
+        custom_text: str | None = None,
+        repo_path: Path | None = None,
+        extra_pii_tokens: list[str] | None = None,
         ignore_tests: bool = False,
     ) -> dict[str, Any]:
         pii_list: list[str] = list(extra_pii_tokens or [])
@@ -272,7 +272,7 @@ def scan_git_history(
         }
 
     commits: list[dict[str, Any]] = []
-    current_commit: Optional[dict[str, Any]] = None
+    current_commit: dict[str, Any] | None = None
     additions: list[str] = []
     commit_count = 0
 
@@ -395,7 +395,7 @@ def export_sarif_report(audit_result: dict[str, Any]) -> dict[str, Any]:
 def run_pre_commit_dpapi_guard(
     repo_or_dir: str | Path,
     redact_in_place: bool = False,
-    vault_file: Optional[str | Path] = None,
+    vault_file: str | Path | None = None,
 ) -> dict[str, Any]:
     """Execute pre-commit secret guard with optional DPAPI in-place quarantine.
 
@@ -547,12 +547,7 @@ def run_pre_commit_dpapi_guard(
         v_path.parent.mkdir(parents=True, exist_ok=True)
         v_path.write_text(json.dumps(vault_entries, indent=2), encoding="utf-8")
 
-    if findings_count == 0:
-        decision = "allow"
-    elif redact_in_place:
-        decision = "allow"
-    else:
-        decision = "block"
+    decision = "allow" if findings_count == 0 or redact_in_place else "block"
 
     return {
         "decision": decision,
