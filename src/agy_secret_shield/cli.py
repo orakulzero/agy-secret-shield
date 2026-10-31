@@ -5,14 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from .l1_primitives import dpapi_seal_secret, dpapi_unseal_secret
 from .l3_pipeline import SecretShieldPipeline
 from .l4_app import _validate_audit_repo_path
 
 
-def validate_audit_args(profile: str, repo_path: Optional[str], ignore_tests: bool) -> dict:
+def validate_audit_args(profile: str, repo_path: str | None, ignore_tests: bool) -> dict:
     """Validates and sanitizes arguments for the audit command using hardened traversal checks."""
     errors: list[str] = []
     normalized = None
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
