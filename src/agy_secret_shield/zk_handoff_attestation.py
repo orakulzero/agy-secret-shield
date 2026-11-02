@@ -22,7 +22,7 @@ class ZKHandoffAttestor:
 
     @staticmethod
     def _derive_witness_scalar(secret_witness: str) -> int:
-        digest = hashlib.sha256(f"zk-witness:{secret_witness}".encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(f"zk-witness:{secret_witness}".encode()).hexdigest()
         scalar = int(digest, 16) % (_GROUP_ORDER - 1)
         return scalar + 1
 
@@ -55,7 +55,7 @@ class ZKHandoffAttestor:
 
     @staticmethod
     def _compute_challenge_hash(commitment_hash: str, public_inputs_hash: str) -> str:
-        raw = f"fiat-shamir:{commitment_hash}:{public_inputs_hash}".encode("utf-8")
+        raw = f"fiat-shamir:{commitment_hash}:{public_inputs_hash}".encode()
         return hashlib.sha256(raw).hexdigest()
 
     def create_handoff_attestation(
