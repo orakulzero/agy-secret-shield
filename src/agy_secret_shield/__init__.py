@@ -21,6 +21,7 @@ from .skillspector_scanner import (
     SkillSpectorScanner,
     SkillVulnerability,
 )
+from .zk_handoff_attestation import ZKHandoffAttestor
 
 __all__ = [
     "SECRET_SIGNATURE_CATALOG",
@@ -28,6 +29,7 @@ __all__ = [
     "SkillAuditResult",
     "SkillSpectorScanner",
     "SkillVulnerability",
+    "ZKHandoffAttestor",
     "analyze_git_blob_entropy",
     "compute_token_entropy",
     "decode_and_scan_obfuscated_secrets",
