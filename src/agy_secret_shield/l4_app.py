@@ -152,20 +152,22 @@ def get_catalog() -> dict[str, Any]:
 def _validate_audit_repo_path(repo_path: str) -> Path:
     raw = repo_path.strip()
     unquoted = urllib.parse.unquote(raw)
+    
+    # Mitigate double/multiple URL encoding evasion
+    prev = unquoted
+    while "%" in unquoted:
+        unquoted = urllib.parse.unquote(unquoted)
+        if unquoted == prev:
+            break
+        prev = unquoted
 
     if ".." in raw or ".." in unquoted:
-        raise HTTPException(
-            status_code=400,
-            detail="Path traversal attempt detected: access outside workspace is prohibited",
-        )
+        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
 
     normalized = unquoted.replace("\\", "/")
     parts = [p for p in normalized.split("/") if p]
     if any(p in (".", "..") for p in parts):
-        raise HTTPException(
-            status_code=400,
-            detail="Path traversal attempt detected: access outside workspace is prohibited",
-        )
+        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
 
     lowered = normalized.lower()
     prohibited_system_patterns = (
@@ -183,28 +185,18 @@ def _validate_audit_repo_path(repo_path: str) -> Path:
         "c:/windows",
     )
     if any(pattern in lowered for pattern in prohibited_system_patterns):
-        raise HTTPException(
-            status_code=400,
-            detail="Path traversal attempt detected: access outside workspace is prohibited",
-        )
+        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
 
     try:
         resolved = Path(unquoted).resolve()
     except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Path traversal attempt detected: access outside workspace is prohibited",
-        ) from exc
+        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited") from exc
 
     resolved_norm = str(resolved).lower().replace("\\", "/")
     if resolved_norm in ("c:", "c:/", "/", "d:", "d:/") or "c:/windows" in resolved_norm or "/etc" in resolved_norm:
-        raise HTTPException(
-            status_code=400,
-            detail="Path traversal attempt detected: access outside workspace is prohibited",
-        )
+        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
 
     return Path(unquoted)
-
 
 @app.post("/api/shield/audit")
 def post_audit(req: AuditRequest) -> dict[str, Any]:
