@@ -149,6 +149,17 @@ def get_catalog() -> dict[str, Any]:
     }
 
 
+class PathTraversalError(HTTPException, ValueError):
+    """Exception satisfying both FastAPI HTTPException(400) and standard ValueError."""
+
+    def __init__(
+        self,
+        detail: str = "Path traversal attempt detected: access outside workspace is prohibited",
+    ) -> None:
+        HTTPException.__init__(self, status_code=400, detail=detail)
+        ValueError.__init__(self, detail)
+
+
 def _validate_audit_repo_path(repo_path: str) -> Path:
     raw = repo_path.strip()
     unquoted = urllib.parse.unquote(raw)
@@ -162,12 +173,12 @@ def _validate_audit_repo_path(repo_path: str) -> Path:
         prev = unquoted
 
     if ".." in raw or ".." in unquoted:
-        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
+        raise PathTraversalError("Path traversal attempt detected: access outside workspace is prohibited")
 
     normalized = unquoted.replace("\\", "/")
     parts = [p for p in normalized.split("/") if p]
     if any(p in (".", "..") for p in parts):
-        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
+        raise PathTraversalError("Path traversal attempt detected: access outside workspace is prohibited")
 
     lowered = normalized.lower()
     prohibited_system_patterns = (
@@ -185,16 +196,16 @@ def _validate_audit_repo_path(repo_path: str) -> Path:
         "c:/windows",
     )
     if any(pattern in lowered for pattern in prohibited_system_patterns):
-        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
+        raise PathTraversalError("Path traversal attempt detected: access outside workspace is prohibited")
 
     try:
         resolved = Path(unquoted).resolve()
     except Exception as exc:
-        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited") from exc
+        raise PathTraversalError("Path traversal attempt detected: access outside workspace is prohibited") from exc
 
     resolved_norm = str(resolved).lower().replace("\\", "/")
     if resolved_norm in ("c:", "c:/", "/", "d:", "d:/") or "c:/windows" in resolved_norm or "/etc" in resolved_norm:
-        raise ValueError("Path traversal attempt detected: access outside workspace is prohibited")
+        raise PathTraversalError("Path traversal attempt detected: access outside workspace is prohibited")
 
     return Path(unquoted)
 
